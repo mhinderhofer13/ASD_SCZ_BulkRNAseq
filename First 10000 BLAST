@@ -12,3 +12,34 @@ blastn -query human_read_check.fasta \
        -evalue 1e-10 \
        -outfmt "6 qseqid sseqid staxids sscinames pident length mismatch gapopen qstart qend sstart send evalue bitscore" \
        > blast_results.txt
+
+total=$(cut -f1 blast_results.txt | sort -u | wc -l)
+
+human=$(awk '$4=="Homo sapiens"' blast_results.txt | cut -f1 | sort -u | wc -l)
+
+nonhuman=$(( total - human ))
+
+echo "Total reads BLASTed: $total"
+echo "Human reads: $human"
+echo "Non-human reads: $nonhuman"
+
+awk -v h="$human" -v t="$total" 'BEGIN{
+  printf "Percent human: %.2f%%\n", 100*h/t
+  printf "Percent non-human: %.2f%%\n", 100*(t-h)/t
+}'
+
+head -20 blast_results.txt
+
+echo "Human hits:"
+awk -F'\t' '$4 ~ /Homo sapiens/ {count++} END {print count}' blast_results.txt
+
+echo "Mouse hits:"
+awk -F'\t' '$4 ~ /Mus musculus/ {count++} END {print count}' blast_results.txt
+
+wc -l blast_results.txt
+
+echo "Unique reads with human hit:"
+awk -F'\t' '$4=="Homo sapiens"{print $1}' blast_results.txt | sort -u | wc -l
+
+echo "Unique reads with mouse hit:"
+awk -F'\t' '$4=="Mus musculus"{print $1}' blast_results.txt | sort -u | wc -l
