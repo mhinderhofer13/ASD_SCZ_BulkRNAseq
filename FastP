@@ -1,3 +1,16 @@
-module load fastqc/0.12.1
+module load fastp/0.23.4
 
-fastqc Fastq_Files/*.fastq.gz --outdir FastQC --threads 12
+for R1 in Fastq_Files/*_R1_*.fastq.gz; do
+    R2=${R1/_R1_/_R2_}            
+    base=$(basename "$R1" | sed 's/_R1_.*//')
+
+    fastp \
+        -i "$R1" \
+        -I "$R2" \
+        -o "Fastp/${base}_R1_trimmed.fastq.gz" \
+        -O "Fastp/${base}_R2_trimmed.fastq.gz" \
+        --detect_adapter_for_pe \
+        --thread 12 \
+        --html "Fastp/${base}.fastp.html" \
+        --json "Fastp/${base}.fastp.json"
+done
