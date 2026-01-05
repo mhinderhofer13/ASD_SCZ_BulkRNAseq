@@ -71,3 +71,64 @@ STAR \
   --quantMode TranscriptomeSAM GeneCounts
 
 echo "Completed STAR alignment for ${sample} at $(date)"
+
+#Xengsort Alignment Sbatch 
+
+#!/bin/bash
+#SBATCH --job-name=graft_STAR_align
+#SBATCH -c 18
+#SBATCH --mem=96G
+#SBATCH --time=24:00:00 
+#SBATCH --constraint=avx512
+#SBATCH --array=1-18
+#SBATCH --output=star_align_%A_%a.out
+#SBATCH --error=star_align_%A_%a.err
+
+# Load STAR module
+module load uri/main all/STAR/2.7.10b-GCC-11.3.0
+
+# Define paths
+XENGSORT_OUT="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/Xengsort/Xengsort_classify"
+HUMAN_GENOME_DIR="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/STAR_index/human"
+HUMAN_GTF="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/Genome_Ref/Homo_sapiens.GRCh38.115.gtf"
+OUTPUT_DIR="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/STAR_alignv2"
+
+# Sample logic
+i=${SLURM_ARRAY_TASK_ID}
+num=$(printf "%02d" $i)
+sample="25298R-01-${num}v1"
+s_num=$((90 + i))
+base="${sample}_S${s_num}_L003"
+
+# Graft FASTQ files from Xengsort (human reads)
+R1_GRAFT="${XENGSORT_OUT}/${sample}/${base}-graft.1.fq.gz"
+R2_GRAFT="${XENGSORT_OUT}/${sample}/${base}-graft.2.fq.gz"
+
+# Output directory
+ALIGN_OUT="${OUTPUT_DIR}/${sample}"
+mkdir -p "${ALIGN_OUT}"
+
+echo "Starting STAR alignment of graft (human) reads for ${sample} at $(date)"
+echo "Graft FASTQ files: ${R1_GRAFT} and ${R2_GRAFT}"
+
+# Check FASTQ existence
+if [[ ! -f ${R1_GRAFT} || ! -f ${R2_GRAFT} ]]; then
+    echo "Graft FASTQ files missing for ${sample}. Skipping."
+    exit 1
+fi
+
+# Align graft reads to human genome
+STAR \
+  --runThreadN ${SLURM_CPUS_PER_TASK} \
+  --genomeDir ${HUMAN_GENOME_DIR} \
+  --readFilesIn ${R1_GRAFT} ${R2_GRAFT} \
+  --readFilesCommand zcat \
+  --outFileNamePrefix ${ALIGN_OUT}/${base}_human_ \
+  --sjdbGTFfile ${HUMAN_GTF} \
+  --twopassMode Basic \
+  --outSAMtype BAM SortedByCoordinate \
+  --outSAMunmapped Within \
+  --outSAMattributes Standard \
+  --quantMode TranscriptomeSAM GeneCounts
+
+echo "Completed STAR alignment of graft (human) reads for ${sample} at $(date)"
