@@ -1,0 +1,85 @@
+module load blast-plus/2.14.1 samtools/1.19.2
+
+# Create a directory for your extracted sequences
+mkdir gene_specific_reads
+
+# Extract reads for CNR1 (chromosome 6)
+samtools view -b -F 4 25298R-01-16v1_S106_L003_human_Aligned.sortedByCoord.out.bam \
+  6:88139863-88167364 | \
+  samtools fasta - > gene_specific_reads/CNR1_reads_SX16.fasta
+
+# Extract reads for MGLL (chromosome 3)
+samtools view -b -F 4 25298R-01-16v1_S106_L003_human_Aligned.sortedByCoord.out.bam \
+  3:127689062-128052190 | \
+  samtools fasta - > gene_specific_reads/MGLL_reads_SX16.fasta
+
+# Extract reads for PLCB1 (chromosome 20)
+samtools view -b -F 4 25298R-01-16v1_S106_L003_human_Aligned.sortedByCoord.out.bam \
+  20:8077251-8968360 | \
+  samtools fasta - > gene_specific_reads/PLCB1_reads_SX16.fasta
+
+# Extract reads for DAGLA (chromosome 11)
+samtools view -b -F 4 25298R-01-16v1_S106_L003_human_Aligned.sortedByCoord.out.bam \
+  11:61680391-61747003 | \
+  samtools fasta - > gene_specific_reads/DAGLA_reads_SX16.fasta
+
+# Extract reads for NRXN1 (chromosome 2)
+samtools view -b -F 4 25298R-01-16v1_S106_L003_human_Aligned.sortedByCoord.out.bam \
+  2:49918503-51225575 | \
+  samtools fasta - > gene_specific_reads/NRXN1_reads_SX16.fasta
+
+# Count sequences in each file
+for file in gene_specific_reads/*.fasta; do
+  echo "$file: $(grep -c "^>" $file) sequences"
+done
+
+# Create BLAST database for human genome
+makeblastdb -in ../Genome_Ref/Homo_sapiens.GRCh38.dna.primary_assembly.fa \
+  -dbtype nucl \
+  -out human_genome \
+  -title "Human GRCh38" \
+  -parse_seqids
+
+# Create BLAST database for mouse genome
+makeblastdb -in ../Genome_Ref/Mus_musculus.GRCm39.dna.primary_assembly.fa \
+  -dbtype nucl \
+  -out mouse_genome \
+  -title "Mouse GRCm39" \
+  -parse_seqids
+
+# Set the absolute path to BLAST databases
+BLASTDB_PATH=/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/blastdb
+
+# BLAST against human genome
+for fasta in gene_specific_reads/*_reads_SX16.fasta; do
+  gene=$(basename $fasta _reads_SX16.fasta)
+  echo "BLASTing ${gene} against human..."
+  blastn -query $fasta \
+    -db ${BLASTDB_PATH}/human_genome \
+    -out gene_specific_reads/${gene}_human.txt \
+    -outfmt "6 qseqid sseqid pident length evalue bitscore" \
+    -max_target_seqs 5 \
+    -evalue 1e-10 \
+    -num_threads 18
+done
+
+# BLAST against mouse genome
+for fasta in gene_specific_reads/*_reads_SX16.fasta; do
+  gene=$(basename $fasta _reads_SX16.fasta)
+  echo "BLASTing ${gene} against mouse..."
+  blastn -query $fasta \
+    -db ${BLASTDB_PATH}/mouse_genome \
+    -out gene_specific_reads/${gene}_mouse.txt \
+    -outfmt "6 qseqid sseqid pident length evalue bitscore" \
+    -max_target_seqs 5 \
+    -evalue 1e-10 \
+    -num_threads 18
+done
+
+# Count and summarize results
+echo "=== BLAST Results Summary ==="
+for gene in CNR1 MGLL PLCB1 DAGLA NRXN1; do
+  human_count=$(wc -l < gene_specific_reads/${gene}_human.txt 2>/dev/null || echo "0")
+  mouse_count=$(wc -l < gene_specific_reads/${gene}_mouse.txt 2>/dev/null || echo "0")
+  echo "${gene}: Human=${human_count}, Mouse=${mouse_count}"
+done
