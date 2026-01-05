@@ -1,0 +1,67 @@
+module load conda/latest python/3.12.3
+conda create --name xengsort -c bioconda xengsort
+conda activate xengsort
+conda install -c bioconda xengsort
+
+xengsort index \
+  --index Xengsort_index \
+  -H /project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/Genome_Ref/Mus_musculus.GRCm39.dna.primary_assembly.fa \
+  -G /project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/Genome_Ref/Homo_sapiens.GRCh38.dna.primary_assembly.fa \
+  -n 4500000000 \
+  -k 25
+
+#!/bin/bash
+#SBATCH --job-name=xengsort_classify
+#SBATCH -c 16
+#SBATCH --mem=48G
+#SBATCH --time=12:00:00
+#SBATCH --array=1-18
+#SBATCH --constraint=avx512
+#SBATCH --output=xengsort_classify_%A_%a.out
+#SBATCH --error=xengsort_classify_%A_%a.err
+
+# Load environment
+module load python/3.12.3 conda/latest uri/main all/HTSlib/1.18-GCC-12.3.0
+
+conda activate xengsort
+
+# Define paths
+FASTQ_DIR="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/Fastp"
+INDEX="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/Xengsort/Xengsort_index.hash"
+CLASSIFY_OUT="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/Xengsort/Xengsort_classify"
+
+# Sample logic
+i=${SLURM_ARRAY_TASK_ID}
+num=$(printf "%02d" $i)
+sample="25298R-01-${num}v1"
+s_num=$((90 + i))
+base="${sample}_S${s_num}_L003"
+
+# FASTQ files
+R1_FASTQ="${FASTQ_DIR}/${base}_R1_trimmed.fastq"
+R2_FASTQ="${FASTQ_DIR}/${base}_R2_trimmed.fastq"
+
+# Output prefix
+OUT_PREFIX="${CLASSIFY_OUT}/${sample}/${base}"
+mkdir -p "$(dirname "${OUT_PREFIX}")"
+
+echo "Starting xengsort classify for ${sample} at $(date)"
+
+# Check FASTQ existence
+if [[ ! -f ${R1_FASTQ} || ! -f ${R2_FASTQ} ]]; then
+    echo "FASTQ files missing for ${sample}. Skipping."
+    exit 1
+fi
+
+# Run xengsort classify
+xengsort classify \
+  --fastq "${R1_FASTQ}" \
+  --pairs "${R2_FASTQ}" \
+  --index "${INDEX}" \
+  --out "${OUT_PREFIX}" \
+  --threads 16 \
+  --classification count \
+  --compression gz \
+  --progress
+
+echo "Completed xengsort classify for ${sample} at $(date)"
