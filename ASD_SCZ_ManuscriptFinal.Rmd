@@ -1,0 +1,685 @@
+#Load Required Packages
+```{r}
+library(edgeR)
+library(tximport)
+library(svglite)
+library(dplyr)
+library(ggplot2)
+library(ggvenn)
+library(EnhancedVolcano)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(msigdbr)
+library(pheatmap)
+```
+
+#Set file path and file names
+```{r}
+file_dir <- "/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/RSEM/RSEM_counts"
+files <- list.files(file_dir, pattern = "\\.genes\\.results$", full.names = TRUE)
+```
+
+#Rename files to reflect Sample ID + Treatment
+```{r}
+rename_table <- tribble(
+  ~old,              ~new,
+  "25298R-01-01v1", "3320a-1_TTX",
+  "25298R-01-02v1", "3320a-2_TTX",
+  "25298R-01-03v1", "3320a-3_TTX",
+  "25298R-01-04v1", "3320a-1",
+  "25298R-01-05v1", "3320a-2",
+  "25298R-01-06v1", "3320a-3",
+  "25298R-01-07v1", "7880-1_TTX",
+  "25298R-01-08v1", "7880-2_TTX",
+  "25298R-01-09v1", "7880-3_TTX",
+  "25298R-01-10v1", "7880-1",
+  "25298R-01-11v1", "7880-2",
+  "25298R-01-12v1", "7880-3",
+  "25298R-01-13v1", "C3141a-1_TTX",
+  "25298R-01-14v1", "C3141a-2_TTX",
+  "25298R-01-15v1", "C3141a-3_TTX",
+  "25298R-01-16v1", "C3141a-1",
+  "25298R-01-17v1", "C3141a-2",
+  "25298R-01-18v1", "C3141a-3"
+)
+
+old_ids <- gsub("\\.genes\\.results$", "", basename(files))
+sample_names <- rename_table$new[match(old_ids, rename_table$old)]
+
+names(files) <- sample_names
+```
+
+#Drop TTX treated samples 
+```{r}
+drop_samples <- c("C3141a-1_TTX","C3141a-2_TTX","C3141a-3_TTX",
+                  "3320a-1_TTX","3320a-2_TTX","3320a-3_TTX",
+                  "7880-1_TTX","7880-2_TTX","7880-3_TTX")
+
+files <- files[!names(files) %in% drop_samples]
+```
+
+#Load in files using TxImport + Add cleaned up gene names to columns
+```{r}
+txi <- tximport(files, type = "rsem", txIn = FALSE, txOut = FALSE)
+
+clean_gene_names <- function(ids) {
+  gsub("^[^_]*_(.*)$", "\\1", ids)
+}
+
+clean_ids <- clean_gene_names(rownames(txi$counts))
+rownames(txi$counts)  <- clean_ids
+rownames(txi$abundance) <- clean_ids
+rownames(txi$length)  <- clean_ids
+```
+
+#Add metadata for conditions 
+```{r}
+metadata <- tibble(
+  sample = colnames(txi$counts)
+) %>%
+  mutate(
+    condition = case_when(
+      grepl("^C3141a", sample) ~ "Control",
+      grepl("^7880",   sample) ~ "ASD",
+      grepl("^3320a",  sample) ~ "SCZ",
+      TRUE ~ NA_character_)
+  )
+```
+
+#Turn metadata to a dataframe
+```{r}
+metadata_df <- as.data.frame(metadata)
+rownames(metadata_df) <- metadata_df$sample
+
+metadata_df$condition <- factor(metadata_df$condition,
+                                levels = c("Control", "ASD", "SCZ"))
+
+table(metadata_df$condition)
+```
+
+#Set up DGEList for EdgeR + Check counts per sample
+```{r}
+dge <- DGEList(counts = round(txi$counts), samples = metadata_df)
+
+colSums(dge$counts)
+```
+
+#Create EdgeR design matrix for conditions 
+```{r}
+design <- model.matrix(~ condition, data = metadata_df)
+colnames(design) <- make.names(colnames(design))
+design
+```
+
+#Filter counts by expression using the design matrix + normalize library sizes 
+```{r}
+keep <- filterByExpr(dge, design)
+dge <- dge[keep, , keep.lib.sizes=FALSE]
+dge <- normLibSizes(dge)
+```
+
+#Estimate Dispersion
+```{r}
+dge <- estimateDisp(dge, design)
+```
+
+#Save DGE_List after filtering + normalizing 
+```{r}
+saveRDS(dge, "DGE_List.rds")
+```
+
+#Plot samples in MDS
+```{r}
+#svglite("MDS_plot.svg", width = 8, height = 6)
+plotMDS(dge, col = as.numeric(metadata_df$condition))
+#dev.off()
+```
+#Use glmQL for fit
+```{r}
+fit <- glmQLFit(dge, design)
+```
+
+#Condition Analysis 
+```{r}
+contrasts <- makeContrasts(
+  ControlvASD = conditionASD,
+  ControlvSCZ = conditionSCZ,
+  levels = design
+)
+```
+
+#Find ASD/SCZvControl DEGs
+```{r}
+ASDvControlDEG <- glmQLFTest(fit, contrast=contrasts[,"ControlvASD"])
+SCZvControlDEG <- glmQLFTest(fit, contrast=contrasts[,"ControlvSCZ"])
+```
+
+#Make table of DEG Results
+```{r}
+res_ASD <- topTags(ASDvControlDEG, n = Inf)$table
+res_SCZ <- topTags(SCZvControlDEG, n = Inf)$table
+```
+
+#Filter results for FDR <= 0.05
+```{r}
+res_ASD_sig <- res_ASD[res_ASD$FDR <= 0.05, ]
+res_SCZ_sig <- res_SCZ[res_SCZ$FDR <= 0.05, ]
+```
+
+#Turn results into a table with the gene names as the columns
+```{r}
+res_ASD_sig <- as.data.frame(res_ASD_sig) %>% 
+  rownames_to_column("gene")
+res_ASD <- as.data.frame(res_ASD) %>% 
+  rownames_to_column("gene")
+
+res_SCZ_sig <- as.data.frame(res_SCZ_sig) %>% 
+  rownames_to_column("gene")
+res_SCZ <- as.data.frame(res_SCZ) %>% 
+  rownames_to_column("gene")
+```
+
+#Print output DEGs as .csv files (raw + FDR filtered)
+```{r}
+write_csv(as.data.frame(res_ASD_sig, rownames = "gene"), "ControlvASD_DEGs.csv")
+write_csv(as.data.frame(res_SCZ_sig, rownames = "gene"), "ControlvSCZ_DEGs.csv")
+write_csv(as.data.frame(res_ASD, rownames = "gene"), "ControlvASD_DEGsALL.csv")
+write_csv(as.data.frame(res_SCZ, rownames = "gene"), "ControlvSCZ_DEGsALL.csv")
+```
+
+#Volcano Plots
+#Load in DEG outputs
+```{r}
+res_ASD_sig <- read.csv("ControlvASD_DEGs.csv")
+res_SCZ_sig <- read.csv("ControlvSCZ_DEGs.csv")
+res_ASD <- read.csv("ControlvASD_DEGsALL.csv")
+res_SCZ <- read.csv("ControlvSCZ_DEGsALL.csv")
+```
+
+#Create Volcano Plots for ASD DEGs using EnhancedVolcano
+```{r}
+#svglite("VolcanoPlot_ControlvASD_NoFC.svg", width = 14, height = 10)
+EnhancedVolcano(
+  res_ASD,
+  lab = res_ASD$gene,
+  FCcutoff = 0,
+  x = "logFC",
+  y = "PValue",
+  title = "ASD vs Control"
+)
+#dev.off()
+```
+#Create Volcano Plots for SCZ DEGs using EnhancedVolcano
+```{r}
+#svglite("VolcanoPlot_ControlvSCZ_NoFC.svg", width = 14, height = 10)
+EnhancedVolcano(
+  res_SCZ,
+  lab = res_SCZ$gene,
+  FCcutoff = 0,
+  x = "logFC",
+  y = "PValue",
+  title = "SCZ vs Control"
+)
+#dev.off()
+```
+
+#Venn Diagram
+#Create Venn Diagram of ASD/SCZvControl DEGs using ggvenn
+```{r}
+asd_genes <- res_ASD_sig$gene
+scz_genes <- res_SCZ_sig$gene
+
+p <- ggvenn(list(ASD = asd_genes, SCZ = scz_genes),
+       fill_color = c("pink", "grey"),
+       stroke_size = 0.5,
+       set_name_size = 5,
+       text_size = 4)
+
+ggsave("DEG_VennDiagram.svg", plot = p, width = 8, height = 6)
+```
+
+#ClusterProfiler
+#Load in DEG results 
+```{r}
+res_ASD_sig <- read.csv("ControlvASD_DEGs.csv")
+res_SCZ_sig <- read.csv("ControlvSCZ_DEGs.csv")
+All_res_ASD <- read.csv("ControlvASD_DEGsALL.csv")
+All_res_SCZ <- read.csv("ControlvSCZ_DEGsALL.csv")
+```
+
+#Set gene name variable 
+```{r}
+asd_symbols <- res_ASD_sig$gene
+scz_symbols <- res_SCZ_sig$gene
+gene_symbols <- All_res_ASD$gene
+```
+
+#Convert from gene symbols to ENTREZID for ASD DEGs
+```{r}
+asd_genes <- bitr(
+  asd_symbols,
+  fromType = "SYMBOL",
+  toType   = "ENTREZID",
+  OrgDb    = org.Hs.eg.db
+)
+```
+#Add FC to genes differentially expressed for ASD
+```{r}
+ASD_FC <- res_ASD_sig$logFC[match(asd_genes$SYMBOL, res_ASD_sig$gene)]
+names(ASD_FC) <- asd_genes$ENTREZID
+```
+
+#Convert from gene symbols to ENTREZID for SCZ DEGs
+```{r}
+scz_genes <- bitr(
+  scz_symbols,
+  fromType = "SYMBOL",
+  toType   = "ENTREZID",
+  OrgDb    = org.Hs.eg.db
+)
+```
+#Add FC to genes differentially expressed for SCZ
+```{r}
+SCZ_FC <- res_SCZ_sig$logFC[match(scz_genes$SYMBOL, res_SCZ_sig$gene)]
+names(SCZ_FC) <- scz_genes$ENTREZID
+```
+
+#Convert from gene symbols to ENTREZID for all genes in analysis (Background)
+```{r}
+all_genes <- bitr(
+  gene_symbols,
+  fromType = "SYMBOL",
+  toType   = "ENTREZID",
+  OrgDb    = org.Hs.eg.db
+)
+```
+
+#Run enrichGO on ASD DEGs for BP 
+```{r}
+ASD_ego <- enrichGO(gene      = asd_genes$ENTREZID,
+                universe      = all_genes$ENTREZID,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+                readable      = TRUE)
+```
+
+#Run enrichGO on SCZ DEGs for BP
+```{r}
+SCZ_ego <- enrichGO(gene      = scz_genes$ENTREZID,
+                universe      = all_genes$ENTREZID,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+                readable      = TRUE)
+```
+
+#Plot bar plots of enrichGO results 
+```{r}
+svglite("ClusterProfilerBarPlot_ControlvASD.svg", width = 14, height = 10)
+barplot(ASD_ego, showCategory = 15) +
+  ggtitle("ASD – GO BP enrichment")
+dev.off()
+
+svglite("ClusterProfilerBarPlot_ControlvSCZ.svg", width = 14, height = 10)
+barplot(SCZ_ego, showCategory = 15) +
+  ggtitle("SCZ – GO BP enrichment")
+dev.off()
+```
+
+#Plot dot plots of enrichGO results 
+```{r}
+svglite("ClusterProfilerDotPlot_ControlvASD.svg", width = 14, height = 10)
+dotplot(ASD_ego, showCategory = 15) +
+  ggtitle("ASD – GO BP enrichment")
+dev.off()
+
+svglite("ClusterProfilerDotPlot_ControlvSCZ.svg", width = 14, height = 10)
+dotplot(SCZ_ego, showCategory = 15) +
+  ggtitle("SCZ – GO BP enrichment")
+dev.off()
+```
+#Plot network plots 
+```{r}
+#svglite("ClusterProfilerConnectionPlot_ControlvASD.svg", width = 14, height = 10)
+p1 <- cnetplot(ASD_ego, showCategory = 8, foldChange = ASD_FC, layout = "kk", fc_threshold = 0.05) 
+p1 <- p1 + scale_colour_gradient2(
+    low       = "red",
+    mid = "white",
+    high      = "green",
+    midpoint  = 0
+  )
+print(p1)
+#dev.off()
+
+#svglite("ClusterProfilerConnectionPlot_ControlvSCZ.svg", width = 14, height = 10)
+p2 <- cnetplot(SCZ_ego, showCategory = 8, foldChange = SCZ_FC, layout = "kk", fc_threshold = 0.05)
+p2 <- p2 + scale_colour_gradient2(
+    low       = "red",
+    mid = "white",
+    high      = "green"
+  )
+print(p2)
+#dev.off()
+```
+
+#Print Go Terms as a dataframe 
+```{r}
+asd_go_df <- as.data.frame(ASD_ego)
+scz_go_df <- as.data.frame(SCZ_ego)
+```
+
+#Print ClusterProfiler results in a .csv file 
+```{r}
+write_csv(asd_go_df, "ClusterProfiler_GO_ASD.csv")
+write_csv(scz_go_df, "ClusterProfiler_GO_SCZ.csv")
+```
+
+#Print ASD specific, SCZ specific, and shared DEGs
+```{r}
+ASD_Specific <- setdiff(asd_genes$ENTREZID, scz_genes$ENTREZID)
+SCZ_Specific <- setdiff(scz_genes$ENTREZID, asd_genes$ENTREZID)
+Shared <- intersect(asd_genes$ENTREZID, scz_genes$ENTREZID)
+```
+
+#Run enrichGO for BP of ASD specific genes 
+```{r}
+ASD_only_ego <- enrichGO(gene = ASD_Specific,
+                universe      = all_genes$ENTREZID,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+                readable      = TRUE)
+```
+
+#Run enrichGO for BP of SCZ specific genes
+```{r}
+SCZ_only_ego <- enrichGO(gene = SCZ_Specific,
+                universe      = all_genes$ENTREZID,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+                readable      = TRUE)
+```
+
+#Run enrichGO for BP of ASD/SCZ shared genes
+```{r}
+Shared_ego <- enrichGO(gene = Shared,
+                universe      = all_genes$ENTREZID,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+                readable      = TRUE)
+```
+
+#Plot dot plots of enrichGO results 
+```{r}
+svglite("GO_DotPlot_ASD_specific.svg", width = 14, height = 10)
+dotplot(ASD_only_ego, showCategory = 15) +
+  ggtitle("ASD-specific DEGs – GO BP enrichment")
+dev.off()
+
+svglite("GO_DotPlot_SCZ_specific.svg", width = 14, height = 10)
+dotplot(SCZ_only_ego, showCategory = 15) +
+  ggtitle("SCZ-specific DEGs – GO BP enrichment")
+dev.off()
+
+svglite("GO_DotPlot_Shared_ASD_SCZ.svg", width = 14, height = 10)
+dotplot(Shared_ego, showCategory = 15) +
+  ggtitle("Shared ASD/SCZ DEGs – GO BP enrichment")
+dev.off()
+```
+#Create dataframe of GO terms 
+```{r}
+asd_only_go_df <- as.data.frame(ASD_only_ego)
+scz_only_go_df <- as.data.frame(SCZ_only_ego)
+shared_go_df <- as.data.frame(Shared_ego)
+```
+
+#Print ClusterProfiler results as .csv  
+```{r}
+write_csv(asd_only_go_df, "ClusterProfiler_GO_ASD_Only.csv")
+write_csv(scz_only_go_df, "ClusterProfiler_GO_SCZ_Only.csv")
+write_csv(shared_go_df, "ClusterProfiler_GO_Shared.csv")
+```
+
+#Shared Comparison 
+#Load in FDR sig DEGs
+```{r}
+res_ASD_sig <- read.csv("ControlvASD_DEGs.csv")
+res_SCZ_sig <- read.csv("ControlvSCZ_DEGs.csv")
+```
+
+#Print shared genes of ASD/SCZvControl DEGs 
+```{r}
+shared <- intersect(res_ASD_sig$gene, res_SCZ_sig$gene)
+```
+
+#Print ASD/SCZ genes that are in the shared DEGs
+```{r}
+asd_sub <- res_ASD_sig %>% filter(gene %in% shared)
+scz_sub <- res_SCZ_sig %>% filter(gene %in% shared)
+```
+
+#Add FC to shared DEGs 
+```{r}
+merged <- inner_join(
+  asd_sub %>% dplyr::select(gene, logFC_ASD = logFC),
+  scz_sub %>% dplyr::select(gene, logFC_SCZ = logFC),
+  by = "gene"
+)
+```
+
+#Print delta FC of shared DEGs 
+```{r}
+merged <- merged %>%
+  mutate(deltaFC = logFC_ASD - logFC_SCZ)
+
+merged <- merged %>%
+  dplyr::mutate(
+    deltaFC = logFC_ASD - logFC_SCZ,
+    abs_deltaFC = abs(deltaFC)
+  )
+```
+
+#Print results of shared DEGs 
+```{r}
+write_csv(merged, "Shared_DEG_FC.csv")
+```
+
+#Look at top 50 by delta FC 
+```{r}
+top50 <- merged %>%
+  dplyr::arrange(desc(abs_deltaFC)) %>%
+  dplyr::slice(1:50)
+```
+
+#Create matrix of top 50 genes and print a heatmap using pheatmap
+```{r}
+fc_matrix <- top50 %>%
+  dplyr::select(gene, logFC_ASD, logFC_SCZ) %>%
+  tibble::column_to_rownames("gene")
+
+pheatmap(
+  fc_matrix,
+  cluster_rows = TRUE,
+  cluster_cols = FALSE,
+  color = colorRampPalette(c("blue", "white", "red"))(100),
+  main = "Shared DEG Fold Changes"
+)
+```
+
+#Categorize DEGs are Up in both/Down in both/Opposite directions + Print plot
+```{r}
+merged2 <- merged %>%
+  mutate(
+    category = case_when(
+      logFC_ASD > 0 & logFC_SCZ > 0 ~ "Up in both",
+      logFC_ASD < 0 & logFC_SCZ < 0 ~ "Down in both",
+      TRUE ~ "Opposite directions"
+    )
+  )
+
+N <- 50
+
+lab_df <- merged2 %>%
+  group_by(category) %>%
+  slice_max(order_by = abs_deltaFC, n = N, with_ties = FALSE) %>%
+  ungroup()
+
+pal <- c(
+  "Up in both" = "red",   
+  "Down in both" = "blue",
+  "Opposite directions" = "forestgreen"
+)
+
+ggplot(merged2, aes(logFC_ASD, logFC_SCZ, color = category)) +
+  geom_hline(yintercept = 0, color = "grey80") +
+  geom_vline(xintercept = 0, color = "grey80") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+
+  geom_point(alpha = 0.25, size = 1.2) +
+
+  geom_point(
+    data = lab_df,
+    aes(logFC_ASD, logFC_SCZ),
+    size = 2.2,
+    stroke = 0.6,
+    shape = 21,
+    fill = "white",
+    show.legend = FALSE
+  ) +
+
+  ggrepel::geom_text_repel(
+    data = lab_df,
+    aes(label = gene),
+    size = 3,
+    max.overlaps = Inf,     
+    force = 2,              
+    box.padding = 0.35,
+    point.padding = 0.15,
+    min.segment.length = 0,
+    segment.color = "grey70",
+    show.legend = FALSE
+  ) +
+
+  scale_color_manual(values = pal) +
+  theme_classic(base_size = 13) +
+  labs(
+    title = "Shared DEGs",
+    x = "log2FC (ASD vs Control)",
+    y = "log2FC (SCZ vs Control)",
+    color = "Direction"
+  )
+```
+
+#Save plot above
+```{r}
+ggsave(
+  filename = "Shared_DEG_Plot_50.eps",
+  plot = last_plot(),
+  device = cairo_ps,
+  width = 12,
+  height = 9,
+  units = "in"
+)
+```
+
+#Gene of Interest Investigation
+#Load DGE List from EdgeR
+```{r}
+dge <- readRDS("DGE_List.rds")
+```
+
+#Calculate logCPM of reads 
+```{r}
+logCPM <- cpm(dge, log = TRUE) 
+
+#logCPM <- as.data.frame(logCPM) %>% 
+#  rownames_to_column("gene")
+```
+
+#Plot specific genes to investigate gene specific logCPM 
+```{r}
+gene_plot <- function(genes) {
+  # Keep only genes that exist
+  genes <- intersect(genes, rownames(logCPM))
+  if (length(genes) == 0) {
+    stop("None of the requested genes were found in rownames(dge).")
+  }
+  
+  # logCPM[genes, ] is genes x samples; transpose so samples are rows
+  df <- as.data.frame(t(logCPM[genes, , drop = FALSE]))
+  
+  # Add sample + condition info from dge$samples
+  df$sample    <- dge$samples$sample
+  df$condition <- dge$samples$condition
+  
+  # Long format for ggplot: one row per sample-gene
+  df_long <- tidyr::pivot_longer(
+    df,
+    cols      = all_of(genes),
+    names_to  = "gene",
+    values_to = "logCPM"
+  )
+  
+  ggplot(df_long, aes(x = sample, y = logCPM, fill = condition)) +
+    geom_col() +
+    facet_wrap(~ gene, scales = "free_y") +
+    theme_bw(base_size = 14) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(
+      title = "Gene expression (logCPM)",
+      x     = "Sample",
+      y     = "log2 CPM"
+    )
+}
+```
+
+#Save plot above 
+```{r}
+#svglite("NRXN1_CPM_Plot.svg", width = 14, height = 10)
+gene_plot(c("CNR1","DAGLA","MGLL","PLCB1"))
+#dev.off()
+```
+
+#MA Plot 
+#MA Plot to check gene expression changes
+```{r}
+res_ASD_all <- read.csv("ControlvASD_DEGsALL.csv")
+res_SCZ_all <- read.csv("ControlvSCZ_DEGsALL.csv")
+
+ggplot(res_ASD_all, aes(x = logCPM, y = logFC)) +
+  geom_point(aes(color = FDR < 0.05), alpha = 0.5, size = 1) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_hline(yintercept = c(-1, 1), linetype = "dashed") +
+  theme_bw(base_size = 12) +
+  labs(
+    title = "MA plot: ASD vs Control",
+    x = "Average expression (logCPM)",
+    y = "log2 fold change (logFC)",
+    color = "FDR < 0.05"
+  )
+
+ggplot(res_SCZ_all, aes(x = logCPM, y = logFC)) +
+  geom_point(aes(color = FDR < 0.05), alpha = 0.5, size = 1) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_hline(yintercept = c(-1, 1), linetype = "dashed") +
+  theme_bw(base_size = 12) +
+  labs(
+    title = "MA plot: SCZ vs Control",
+    x = "Average expression (logCPM)",
+    y = "log2 fold change (logFC)",
+    color = "FDR < 0.05"
+  )
+```
