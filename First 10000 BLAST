@@ -1,0 +1,14 @@
+module load blast-plus/2.14.1 samtools/1.19.2
+
+module load uri/main all/seqtk/1.4-GCC-12.3.0
+
+samtools fastq 25298R-01-04v1_S94_L003_human_Aligned.sortedByCoord.out.bam | head -n 40000 > human_first_10000_SX4.fastq
+
+seqtk seq -A human_first_10000_SX4.fastq > human_first_10000_SX4.fasta
+
+blastn -query human_read_check.fasta \
+       -db nt \
+       -remote \
+       -evalue 1e-10 \
+       -outfmt "6 qseqid sseqid staxids sscinames pident length mismatch gapopen qstart qend sstart send evalue bitscore" \
+       > blast_results.txt
