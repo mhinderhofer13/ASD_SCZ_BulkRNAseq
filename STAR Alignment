@@ -1,0 +1,73 @@
+#!/bin/bash
+#SBATCH --job-name=STAR_align
+#SBATCH -c 18
+#SBATCH --mem=96G
+#SBATCH --time=24:00:00 
+#SBATCH --constraint=avx512
+#SBATCH --array=1-18
+#SBATCH --output=star_align_%A_%a.out
+#SBATCH --error=star_align_%A_%a.err
+
+# Load modules
+module load uri/main all/STAR/2.7.10b-GCC-11.3.0
+
+# Define paths
+FASTQ_DIR="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/Fastp"
+HUMAN_GENOME_DIR="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/STAR_index/human"
+HUMAN_GTF="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/Genome_Ref/Homo_sapiens.GRCh38.115.gtf"
+MOUSE_GENOME_DIR="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/STAR_index/mouse"
+MOUSE_GTF="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/Genome_Ref/Mus_musculus.GRCm39.115.gtf"
+OUTPUT_DIR="/project/pi_cpak_umass_edu/Jay_Bulk_RNAseq/STAR_align"
+
+# Sample ID logic
+i=${SLURM_ARRAY_TASK_ID}
+num=$(printf "%02d" $i)
+sample="25298R-01-${num}v1"
+s_num=$((90 + i))
+base="${sample}_S${s_num}_L003"
+
+# FASTQ files
+R1_FASTQ="${FASTQ_DIR}/${base}_R1_trimmed.fastq"
+R2_FASTQ="${FASTQ_DIR}/${base}_R2_trimmed.fastq"
+
+# Output directories
+HUMAN_OUT="${OUTPUT_DIR}/human/${sample}"
+MOUSE_OUT="${OUTPUT_DIR}/mouse/${sample}"
+mkdir -p "${HUMAN_OUT}" "${MOUSE_OUT}"
+
+echo "Starting STAR alignment for ${sample} at $(date)"
+echo "FASTQ files: ${R1_FASTQ} and ${R2_FASTQ}"
+
+# Check FASTQ existence
+if [[ ! -f ${R1_FASTQ} || ! -f ${R2_FASTQ} ]]; then
+    echo "FASTQ files missing for ${sample}. Skipping."
+    exit 1
+fi
+
+# Align to human genome
+STAR \
+  --runThreadN ${SLURM_CPUS_PER_TASK} \
+  --genomeDir ${HUMAN_GENOME_DIR} \
+  --readFilesIn ${R1_FASTQ} ${R2_FASTQ} \
+  --outFileNamePrefix ${HUMAN_OUT}/${base}_human_ \
+  --sjdbGTFfile ${HUMAN_GTF} \
+  --twopassMode Basic \
+  --outSAMtype BAM SortedByCoordinate \
+  --outSAMunmapped Within \
+  --outSAMattributes Standard \
+  --quantMode TranscriptomeSAM GeneCounts
+
+# Align to mouse genome
+STAR \
+  --runThreadN ${SLURM_CPUS_PER_TASK} \
+  --genomeDir ${MOUSE_GENOME_DIR} \
+  --readFilesIn ${R1_FASTQ} ${R2_FASTQ} \
+  --outFileNamePrefix ${MOUSE_OUT}/${base}_mouse_ \
+  --sjdbGTFfile ${MOUSE_GTF} \
+  --twopassMode Basic \
+  --outSAMtype BAM SortedByCoordinate \
+  --outSAMunmapped Within \
+  --outSAMattributes Standard \
+  --quantMode TranscriptomeSAM GeneCounts
+
+echo "Completed STAR alignment for ${sample} at $(date)"
